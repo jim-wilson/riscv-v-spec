@@ -311,6 +311,17 @@ application programmers.  A few vector instructions can not be
 executed with a non-zero `vstart` value and will raise an illegal
 instruction exception as defined below.
 
+Implementations are permitted to raise illegal instruction exceptions when
+attempting to execute a vector instruction with a value of `vstart` that the
+implementation can never produce when executing that same instruction with
+the same `vtype` setting.
+
+NOTE: For example, some implementations will never take interrupts during
+execution of a vector arithmetic instruction, instead waiting until the
+instruction completes to take the interrupt.  Such implementations are
+permitted to raise an illegal instruction exception when attempting to execute
+a vector arithmetic instruction when `vstart` is nonzero.
+
 === Vector Fixed-Point Rounding Mode Register `vxrm`
 
 The vector fixed-point rounding-mode register holds a two-bit
@@ -1609,14 +1620,24 @@ LMUL must be set to 1 for a segment load or store (NFIELDS > 1), and
 each field will be held in successively numbered vector registers.  If
 LMUL > 1, an illegal instruction exception will be raised.
 
+If the vector register numbers accessed by the segment load or store
+would increment past 31, then an illegal instruction exception is
+raised.
+
+NOTE: This constraint is to help provide forward-compatibility with a
+future longer instruction encoding that has more addressable vector
+registers.
+
+NOTE: An earlier version imposed a vector register number constraint,
+but this decreased ability to make use of all registers when NFIELDS
+was not a power of 2.
+
 The `vl` register gives the number of structures to move, which is
 equal to the number of elements transferred to each vector register.
 
 If a trap is taken, `vstart` is in units of structures.
 
-NOTE: An earlier version imposed a vector register number constraint,
-but this decreased ability to make use of all registers when NFIELDS
-was not a power of 2.
+
 
 ==== Vector Unit-Stride Segment Loads and Stores
 
@@ -1973,6 +1994,18 @@ The first operand can be either single or double-width. These are
 generally written with a `vw*` prefix on the opcode or `vfw*` for
 vector floating-point operations.
 
+----
+Assembly syntax pattern for vector widening arithmetic instructions
+
+# Double-width result, two single-width sources: 2*SEW = SEW op SEW
+vwop.vv  vd, vs2, vs1, vm  # integer vector-vector      vd[i] = vs2[i] op vs1[i]
+vwop.vx  vd, vs2, rs1, vm  # integer vector-scalar      vd[i] = vs2[i] op x[rs1]
+
+# Double-width result, first source double-width, second source single-width: 2*SEW = 2*SEW op SEW
+vwop.wv  vd, vs2, vs1, vm  # integer vector-vector      vd[i] = vs2[i] op vs1[i]
+vwop.wx  vd, vs2, rs1, vm  # integer vector-scalar      vd[i] = vs2[i] op x[rs1]
+----
+
 NOTE: Originally, a `w` suffix was used on opcode, but this could be
 confused with the use of a `w` suffix to mean word-sized operations in
 doubleword integers, so the `w` was moved to prefix.
@@ -2002,23 +2035,15 @@ register number that is valid for the destination's LMUL value,
 otherwise an illegal instruction exception is raised.
 
 The destination vector register group cannot overlap a source vector
-register group (including the mask register if masked), otherwise an
-illegal instruction exception is raised.
+register group of a different element width (including the mask
+register if masked), otherwise an illegal instruction exception is
+raised.
 
 NOTE: This constraint is necessary to support restart with non-zero
 `vstart`.
 
-----
-Assembly syntax pattern for vector widening arithmetic instructions
-
-# Double-width result, two single-width sources: 2*SEW = SEW op SEW
-vwop.vv  vd, vs2, vs1, vm  # integer vector-vector      vd[i] = vs2[i] op vs1[i]
-vwop.vx  vd, vs2, rs1, vm  # integer vector-scalar      vd[i] = vs2[i] op x[rs1]
-
-# Double-width result, first source double-width, second source single-width: 2*SEW = 2*SEW op SEW
-vwop.wv  vd, vs2, vs1, vm  # integer vector-vector      vd[i] = vs2[i] op vs1[i]
-vwop.wx  vd, vs2, rs1, vm  # integer vector-scalar      vd[i] = vs2[i] op x[rs1]
-----
+NOTE: For the `vw<op>.wv vd, vs2, vs1` format instructions, it is legal
+for vd to equal vs2.
 
 === Narrowing Vector Arithmetic Instructions
 
@@ -2140,7 +2165,7 @@ respects the source/destination overlap restrictions below.
  vadc.vxm   vd, vs2, rs1, v0  # Vector-scalar
 
  # vd[i] = vs2[i] + imm + v0[i].LSB
- vadc.vim   vd, vs2, imm v0  # Vector-immediate
+ vadc.vim   vd, vs2, imm, v0  # Vector-immediate
 
  # Produce carry out in mask register format
 
@@ -2480,6 +2505,39 @@ result.  Can consider changing definition of `vmulh`, `vmulhu`,
 `vmulhsu` to use `vxrm` rounding mode when discarding low half of
 product.  There is no possibility of overflow in this case.
 
+=== Vector Integer Divide Instructions
+
+The divide and remainder instructions are equivalent to the RISC-V
+standard scalar integer multiply/divides, with the same results for
+extreme inputs.
+
+----
+    # Unsigned divide.
+    vdivu.vv vd, vs2, vs1, vm   # Vector-vector
+    vdivu.vx vd, vs2, rs1, vm   # vector-scalar
+
+    # Signed divide
+    vdiv.vv vd, vs2, vs1, vm   # Vector-vector
+    vdiv.vx vd, vs2, rs1, vm   # vector-scalar
+
+    # Unsigned remainder
+    vremu.vv vd, vs2, vs1, vm   # Vector-vector
+    vremu.vx vd, vs2, rs1, vm   # vector-scalar
+
+    # Signed remainder
+    vrem.vv vd, vs2, vs1, vm   # Vector-vector
+    vrem.vx vd, vs2, rs1, vm   # vector-scalar
+----
+
+NOTE: The decision to include integer divide and remainder was
+contentious. The argument in favor is that without a standard
+instruction, software would have to pick some algorithm to perform the
+operation, which would likely perform poorly on some
+microarchitectures versus others.
+
+NOTE: There is no instruction to perform a "scalar divide by vector"
+operation.
+
 === Vector Widening Integer Multiply Instructions
 
 The widening integer multiply instructions return the full 2*SEW-bit
@@ -2554,40 +2612,7 @@ vwmsac.vx vd, rs1, vs2, vm    # vd[i] = -(x[rs1] * vs2[i]) + vd[i]
 
 NOTE: There is no signed-unsigned widening multiply-add instruction.
 
-=== Vector Integer Divide Instructions
-
-The divide and remainder instructions are equivalent to the RISC-V
-standard scalar integer multiply/divides, with the same results for
-extreme inputs.
-
-----
-    # Unsigned divide.
-    vdivu.vv vd, vs2, vs1, vm   # Vector-vector
-    vdivu.vx vd, vs2, rs1, vm   # vector-scalar
-
-    # Signed divide
-    vdiv.vv vd, vs2, vs1, vm   # Vector-vector
-    vdiv.vx vd, vs2, rs1, vm   # vector-scalar
-
-    # Unsigned remainder
-    vremu.vv vd, vs2, vs1, vm   # Vector-vector
-    vremu.vx vd, vs2, rs1, vm   # vector-scalar
-
-    # Signed remainder
-    vrem.vv vd, vs2, vs1, vm   # Vector-vector
-    vrem.vx vd, vs2, rs1, vm   # vector-scalar
-----
-
-NOTE: The decision to include integer divide and remainder was
-contentious. The argument in favor is that without a standard
-instruction, software would have to pick some algorithm to perform the
-operation, which would likely perform poorly on some
-microarchitectures versus others.
-
-NOTE: There is no instruction to perform a "scalar divide by vector"
-operation.
-
-=== Vector Integer Merge Instruction
+=== Vector Integer Merge and Move Instructions
 
 The vector integer merge instruction combines two source operands
 based on the mask field.  Unlike regular arithmetic instructions, the
@@ -2605,9 +2630,9 @@ immediate.
 
 ----
 # Masked  operations, where vm=0
-vmerge.vv vd, vs2, vs1, v0.t  # vd[i] = v0[i].LSB ? vs1[i] : vs2[i]
-vmerge.vx vd, vs2, rs1, v0.t  # vd[i] = v0[i].LSB ? x[rs1] : vs2[i]
-vmerge.vi vd, vs2, imm, v0.t  # vd[i] = v0[i].LSB ? imm    : vs2[i]
+vmerge.vvm vd, vs2, vs1, v0  # vd[i] = v0[i].LSB ? vs1[i] : vs2[i]
+vmerge.vxm vd, vs2, rs1, v0  # vd[i] = v0[i].LSB ? x[rs1] : vs2[i]
+vmerge.vim vd, vs2, imm, v0  # vd[i] = v0[i].LSB ? imm    : vs2[i]
 ----
 
 When the operation is unmasked (`vm=1`), the instructions copies the
@@ -2621,26 +2646,13 @@ vector register file accesses from the first vector operand.
 
 ----
 # Unmasked  operations, where vm=1
-vmerge.vv vd, v0, vs1  # vd[i] = vs1[i], pseudoinstruction vmv.v.v vd, vs1
-vmerge.vx vd, v0, rs1  # vd[i] = x[rs1], pseudoinstruction vmv.v.x vd, rs1
-vmerge.vi vd, v0, imm  # vd[i] = imm,    pseudoinstruction vmv.v.i vd, imm
+vmv.v.v vd, v0, vs1 # vd[i] = vs1[i]
+vmv.v.x vd, v0, rs1 # vd[i] = rs1
+vmv.v.i vd, v0, imm # vd[i] = imm
 ----
 
-An unmasked `vmerge.vv` instruction can be used to copy one vector
-register group to another.  This is given a vector pseudoinstruction
-`vmv.v.v vdest, vsrc` (which expands to `vmerge.vv vdest, v0, vsrc`).
-
-An unmasked `vmerge.vx` instruction can be used to __splat__ a scalar
-`x` register value into all active elements of a vector. This is given
-a vector pseudoinstruction `vmv.v.x vd, rs1`, which expands to `vmerge.vx
-vd, v0, rs1`.
-
-An unmasked `vmerge.vi` instruction can be used to initialize a vector
-register group with an immediate value.  This is given a vector
-pseudoinstruction `vmv.v.i vd, imm`.
-
 NOTE: Mask values can be widened into SEW-width elements using a
-sequence `vmv.v.i vd, 0; vmerge.vi vd, vd, 1, v0.t`.
+sequence `vmv.v.i vd, 0; vmerge.vim vd, vd, 1, v0`.
 
 == Vector Fixed-Point Arithmetic Instructions
 
@@ -2806,6 +2818,10 @@ The `vnclip` instructions are used to pack a fixed-point value into a
 narrower destination.  The instructions support rounding, scaling, and
 saturation into the final destination format.
 
+The second argument (vector element, scalar value, immediate value)
+gives the amount to right shift the source as in the narrowing shift
+instructions, which provides the scaling.
+
 ----
  # Narrowing unsigned clip
  vnclipu.vv vd, vs2, vs1, vm   # vector-vector
@@ -2872,7 +2888,8 @@ elements do not set FP exception flags.
 
     # Floating-point subtract
     vfsub.vv vd, vs2, vs1, vm   # Vector-vector
-    vfsub.vf vd, vs2, rs1, vm   # vector-scalar
+    vfsub.vf vd, vs2, rs1, vm   # Vector-scalar vd[i] = vs2[i] - f[rs1]
+    vfrsub.vf vd, vs2, rs1, vm  # Scalar-vector vd[i] = f[rs1] - vs2[i]
 ----
 
 === Vector Widening Floating-Point Add/Subtract Instructions
@@ -3124,7 +3141,7 @@ copied to the destination element, otherwise a scalar floating-point
 register value is copied to the destination element.
 
 ----
-vfmerge.vf vd, vs2, rs1, v0.t  # vd[i] = v0[i].LSB ? f[rs1] : vs2[i]
+vfmerge.vfm vd, vs2, rs1, v0  # vd[i] = v0[i].LSB ? f[rs1] : vs2[i]
 ----
 
 The unmasked form (`vm=1`) can be used to __splat__ a scalar `f`
@@ -3133,11 +3150,8 @@ must have the `vs2` field set to `v0`, with all other values for `vs2`
 reserved.
 
 ----
-vfmerge.vf vd, v0, rs1  # vd[i] = f[rs1];
+vfmv.v.f vd, rs1  # vd[i] = f[rs1];
 ----
-
-This is given a vector pseudoinstruction `vmv.v.f vd, rs1` which
-expands to `vfmerge.vf vd, v0, rs1`.
 
 NOTE: In Zfinx systems, the instruction is identical to `vmerge.vx`.
 
@@ -4010,6 +4024,8 @@ cannot overlap with the source vector register groups, including the
 mask register if the operation is masked, otherwise an illegal
 instruction exception is raised.
 
+NOTE: When SEW=8, only vector elements 0-255 can be referenced.
+
 === Vector Compress Instruction
 
 The vector compress instruction allows elements selected by a vector
@@ -4238,39 +4254,43 @@ For EDIV > 1, `vadc`, `vmadc`, `vsbc`, `vmsbc` are reserved.
 
 ==== Vector Reduction Instructions under EDIV
 
-Vector reduction instructions now operate independently on all
-elements in a vector, reducing sub-element values within an element to
-an element-wide result.
+Vector single-width integer sum reduction instructions are reserved
+under EDIV>1.  Other vector single-width reductions and vector
+widening integer sum reduction instructions now operate independently
+on all elements in a vector, reducing sub-element values within an
+element to an element-wide result.
+
+The scalar input is taken from the least-significant bits of the
+second operand, with the number of bits equal to the number of
+significant result bits (i.e., for sum and dot reductions, the number
+of bits are given in table above, for non-sum and non-dot reductions,
+equal to the element size).
 
 ----
 # Sum each sub-vector of four bytes into a 16-bit result.
 vsetvli t0, a0, e32,d4  # Vectors of 32-bit elements, divided into byte sub-elements
-vredsum.vs v1, v2, v3 # v1[i][15:0] = v2[i][31:24] + v2[i][23:16]
-                      #              + v2[i][15:8] + v2[i][7:0] + v3[i][31:0]
+vwredsum.vs v1, v2, v3 # v1[i][15:0] = v2[i][31:24] + v2[i][23:16]
+                       #              + v2[i][15:8] + v2[i][7:0] + v3[i][15:0]
 
-vredmax.vs v5, v6, v7 # v5[i][31:0] = max(v6[i][31:24], v6[i][23:16],
-                      #                    v6[i][15:8], v6[i][7:0], v7[i][31:0])
+# Find maximum among sub-elements
+vredmax.vs v5, v6, v7 # v5[i][7:0] = max(v6[i][31:24], v6[i][23:16],
+                      #                    v6[i][15:8], v6[i][7:0], v7[i][7:0])
 ----
 
 Integer sub-element non-sum reductions produce a final result that is
 max(8,SEW/EDIV) bits wide, sign- or zero-extended to full SEW if
 necessary.
 
-Integer sub-element sum reductions produce a final result that is
-max(8,min(SEW,2*SEW/EDIV)) bits wide, sign- or zero-extended to full
-SEW if necessary.
+Integer sub-element widening sum reductions produce a final result
+that is max(8,min(SEW,2*SEW/EDIV)) bits wide, sign- or zero-extended
+to full SEW if necessary.
 
-Floating-point sub-element non-sum reductions produce a final result
-that is SEW/EDIV bits wide.
+Single-width floating-point reductions produce a final result that is
+SEW/EDIV bits wide.
 
-Floating-point sub-element sum reductions produce a final result that
-is min(2*SEW/EDIV,FLEN) bits wide, NaN-boxed to the full SEW width if
+Widening floating-point sum reductions produce a final result that is
+min(2*SEW/EDIV,FLEN) bits wide, NaN-boxed to the full SEW width if
 necessary.
-
-Widening vector reduction operations with non-zero EDIV are reserved.
-NOTE: While these could be defined, it is unclear they are needed and
-this reduces implementation complexity.
-
 
 ==== Vector Register Gather Instructions under EDIV
 
